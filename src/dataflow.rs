@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::collections::VecDeque;
 use thiserror::Error;
 
-mod connectors;
+pub(crate) mod connectors;
 
 #[derive(Error, Debug)]
 enum OpenError {

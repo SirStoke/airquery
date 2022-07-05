@@ -1,18 +1,19 @@
-pub(super) mod airtable {
+pub(crate) mod airtable {
     use anyhow::Result;
     use reqwest::{Method, Url};
     use serde::Deserialize;
     use serde_json::Value;
     use std::collections::HashMap;
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
     pub(crate) struct Record {
         pub id: String,
         pub created_time: String,
         pub fields: HashMap<String, Value>,
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Debug)]
     pub(crate) struct Records {
         pub(crate) records: Vec<Record>,
     }
