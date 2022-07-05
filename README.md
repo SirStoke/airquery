@@ -1,3 +1,3 @@
 # Airquery
 
-Run SQL queries on Airtable bases
+Run SQL queries on Airtable bases (Work in Progress)
