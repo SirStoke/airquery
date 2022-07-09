@@ -5,6 +5,22 @@ use thiserror::Error;
 
 pub(crate) mod connectors;
 
+struct Table(String);
+
+struct Column {
+    name: String,
+    table: Table,
+}
+
+impl Column {
+    fn new(name: String, table: String) -> Column {
+        Column {
+            name,
+            table: Table(table),
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 enum OpenError {
     #[error("node internally failed to setup")]
@@ -23,6 +39,14 @@ enum CloseError {
     Internal(#[from] anyhow::Error),
 }
 
+#[derive(Error, Debug)]
+enum PropertiesError {
+    #[error("node internally failed to provide properties")]
+    Internal(#[from] anyhow::Error),
+    #[error("couldn't find properties for table `{0}`")]
+    EmptyProperties(String),
+}
+
 /// Represents some data found in a Tuple - e.g. a number or a text
 enum Datum {
     Number(f64),
@@ -30,26 +54,30 @@ enum Datum {
 }
 
 struct Tuple {
-    column_names: Vec<String>,
+    columns: Vec<Column>,
     data: Vec<Datum>,
 }
 
 impl Tuple {
-    fn new(column_names: Vec<String>, data: Vec<Datum>) -> Tuple {
-        Tuple { column_names, data }
+    fn new(columns: Vec<Column>, data: Vec<Datum>) -> Tuple {
+        Tuple { columns, data }
     }
 }
 
 /// Represents the physical properties describing the tuples emitted by the Node.
 /// e.g. columns, sorting, etc.
-struct Properties {
-    sort_by: Vec<String>,
-    columns: Vec<String>,
+struct Properties<'a> {
+    sort_by: Option<&'a Vec<String>>,
+    columns: &'a Vec<Column>,
 }
 
 /// A Data Flow Node
 ///
 /// This is the classic Volcano interface:
+///     - #open() prepares the necessary resources (e.g. opens files)
+///     - #next() optionally emits a tuple
+///     - #close() closes the resources down (e.g. closes files)
+///     - #properties() returns the physical properties of the tuples emitted
 ///
 /// #open() must be called before #next(), which must be called before #close()
 #[async_trait]
@@ -57,10 +85,15 @@ trait Node {
     async fn open(&mut self) -> Result<(), OpenError>;
     async fn next(&mut self) -> Result<Option<Tuple>, NextError>;
     async fn close(&mut self) -> Result<(), CloseError>;
+
+    async fn properties(&mut self) -> Result<Properties, PropertiesError>;
 }
 
 const BATCH_SIZE: u16 = 100;
 
+/// A Data Flow node that fetches rows from an Airtable table
+///
+/// It internally buffers up to [BATCH_SIZE] rows
 struct AirtableScanNode {
     table: String,
     base: String,
@@ -94,7 +127,7 @@ impl AirtableScanNode {
                 };
 
                 if let Some(datum) = datum {
-                    column_names.push(column.clone());
+                    column_names.push(Column::new(column.clone(), self.table.clone()));
                     data.push(datum);
                 }
             }
@@ -121,10 +154,27 @@ impl Node for AirtableScanNode {
             AirtableScanNode::load_buffer(self).await?;
         }
 
-        Ok(self.buffer.pop_front())
+        Ok(self.buffer.pop_back())
     }
 
     async fn close(&mut self) -> Result<(), CloseError> {
         Ok(())
+    }
+
+    async fn properties(&mut self) -> Result<Properties, PropertiesError> {
+        if self.buffer.is_empty() {
+            self.load_buffer()
+                .await
+                .map_err(|err| -> PropertiesError { err.into() })?;
+        }
+
+        if self.buffer.is_empty() {
+            Err(PropertiesError::EmptyProperties(self.table.clone()))?;
+        }
+
+        Ok(Properties {
+            sort_by: None,
+            columns: &self.buffer[0].columns,
+        })
     }
 }
