@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 pub(crate) mod connectors;
@@ -176,5 +177,29 @@ impl Node for AirtableScanNode {
             sort_by: None,
             columns: &self.buffer[0].columns,
         })
+    }
+}
+
+struct ProjectNode {
+    flow: Arc<Mutex<dyn Node + Send>>,
+    projection: Vec<Column>,
+}
+
+#[async_trait]
+impl Node for ProjectNode {
+    async fn open(&mut self) -> Result<(), OpenError> {
+        Ok(())
+    }
+
+    async fn next(&mut self) -> Result<Option<Tuple>, NextError> {
+        todo!()
+    }
+
+    async fn close(&mut self) -> Result<(), CloseError> {
+        Ok(())
+    }
+
+    async fn properties(&mut self) -> Result<Properties, PropertiesError> {
+        todo!()
     }
 }
