@@ -31,7 +31,7 @@ pub struct Cli {
 impl Cli {
     pub fn new() -> Cli {
         let args = Args::parse();
-        let stderr = StandardStream::stderr(ColorChoice::Auto);
+        let stderr = StandardStream::stderr(ColorChoice::Always);
 
         let mut colors = Colors {
             error: ColorSpec::new(),
@@ -39,7 +39,7 @@ impl Cli {
         };
 
         colors.error.set_fg(Some(Color::Red));
-        colors.error.set_fg(None);
+        colors.reset.set_fg(None);
 
         Cli {
             stderr,
