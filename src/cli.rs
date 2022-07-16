@@ -1,5 +1,4 @@
 use clap::Parser;
-use sqlparser::ast::Statement;
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::{Parser as SQLParser, ParserError};
 use std::io::Write;
@@ -53,7 +52,13 @@ impl Cli {
         match SQLParser::parse_sql(&GenericDialect {}, &self.args.query) {
             Err(ParserError::ParserError(err)) => self.quit_because(err),
             Err(ParserError::TokenizerError(err)) => self.quit_because(err),
-            Ok(ast) => println!("AST: {:?}", ast),
+            Ok(ast) => {
+                println!("AST: {:?}", ast);
+
+                let result = super::compiler::compile(&ast);
+
+                println!("Result: {:?}", result);
+            }
         }
     }
 

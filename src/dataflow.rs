@@ -1,14 +1,15 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
 pub(crate) mod connectors;
 
+#[derive(Debug)]
 struct Table(String);
 
+#[derive(Debug)]
 struct Column {
     name: String,
     table: Table,
@@ -82,11 +83,13 @@ impl Tuple {
     }
 }
 
-/// Represents the physical properties describing the tuples emitted by the Node.
+/// Represents the physical properties describing the tuples emitted by the Node (or requested
+/// by the sql query).
+///
 /// e.g. columns, sorting, etc.
-#[derive(Clone)]
-struct Properties<'a> {
-    sort_by: Option<&'a Vec<String>>,
+#[derive(Clone, Debug)]
+pub struct Properties<'a> {
+    order_by: Option<&'a Vec<Column>>,
     columns: &'a Vec<Column>,
 }
 
@@ -194,7 +197,7 @@ impl Node for AirtableScanNode {
         }
 
         Ok(Properties {
-            sort_by: None,
+            order_by: None,
             columns: &self.buffer[0].columns,
         })
     }
@@ -242,7 +245,7 @@ impl<'a> Node for ProjectNode<'a> {
 
             Ok(Properties {
                 columns: &self.projection,
-                sort_by: upstream_props.sort_by,
+                order_by: upstream_props.order_by,
             })
         }
     }

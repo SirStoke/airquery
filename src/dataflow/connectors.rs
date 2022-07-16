@@ -5,7 +5,7 @@ pub(crate) mod airtable {
     use serde_json::Value;
     use std::collections::HashMap;
 
-    #[derive(Deserialize, Debug)]
+    #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub(crate) struct Record {
         pub id: String,
@@ -13,7 +13,7 @@ pub(crate) mod airtable {
         pub fields: HashMap<String, Value>,
     }
 
-    #[derive(Deserialize, Debug)]
+    #[derive(Deserialize)]
     pub(crate) struct Records {
         pub(crate) records: Vec<Record>,
     }
