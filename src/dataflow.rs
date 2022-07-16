@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::VecDeque;
 use thiserror::Error;
-use tokio::sync::Mutex;
 
 pub(crate) mod connectors;
 

@@ -52,21 +52,26 @@ fn check_unsupported(select: &Select) -> Result<(), CompilerError> {
     check_none(&select.having, "HAVING")?;
     check_none(&select.qualify, "QUALIFY")?;
 
+    let has_joins = select.from.iter().any(|from| !from.joins.is_empty());
+
+    check_bool(has_joins, "JOIN")?;
+
     Ok(())
 }
 
 #[inline(always)]
 fn check_empty<T>(vec: &Vec<T>, msg: &str) -> Result<(), CompilerError> {
-    if !vec.is_empty() {
-        Err(CompilerError::Unsupported(msg.to_string()))
-    } else {
-        Ok(())
-    }
+    check_bool(!vec.is_empty(), msg)
 }
 
 #[inline(always)]
 fn check_none<T>(option: &Option<T>, msg: &str) -> Result<(), CompilerError> {
-    if option.is_some() {
+    check_bool(option.is_some(), msg)
+}
+
+#[inline(always)]
+fn check_bool(is_unsupported: bool, msg: &str) -> Result<(), CompilerError> {
+    if is_unsupported {
         Err(CompilerError::Unsupported(msg.to_string()))
     } else {
         Ok(())
