@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 pub(crate) mod connectors;
 
@@ -19,6 +20,12 @@ impl Column {
             name,
             table: Table(table),
         }
+    }
+}
+
+impl PartialEq for Column {
+    fn eq(&self, other: &Self) -> bool {
+        self.table.0 == other.table.0 && self.name == other.name
     }
 }
 
@@ -46,9 +53,12 @@ enum PropertiesError {
     Internal(#[from] anyhow::Error),
     #[error("couldn't find properties for table `{0}`")]
     EmptyProperties(String),
+    #[error("node wasn't open")]
+    NotOpen,
 }
 
 /// Represents some data found in a Tuple - e.g. a number or a text
+#[derive(Clone)]
 enum Datum {
     Number(f64),
     Text(String),
@@ -63,10 +73,18 @@ impl Tuple {
     fn new(columns: Vec<Column>, data: Vec<Datum>) -> Tuple {
         Tuple { columns, data }
     }
+
+    fn with_capacity(size: usize) -> Tuple {
+        Tuple {
+            columns: Vec::with_capacity(size),
+            data: Vec::with_capacity(size),
+        }
+    }
 }
 
 /// Represents the physical properties describing the tuples emitted by the Node.
 /// e.g. columns, sorting, etc.
+#[derive(Clone)]
 struct Properties<'a> {
     sort_by: Option<&'a Vec<String>>,
     columns: &'a Vec<Column>,
@@ -104,6 +122,8 @@ struct AirtableScanNode {
 }
 
 impl AirtableScanNode {
+    /// Loads a batch of rows from the table inside an internal buffer, where they will eventually be
+    /// dequeued downstream
     async fn load_buffer(&mut self) -> anyhow::Result<()> {
         let records = connectors::airtable::records(
             &self.table,
@@ -180,26 +200,50 @@ impl Node for AirtableScanNode {
     }
 }
 
-struct ProjectNode {
-    flow: Arc<Mutex<dyn Node + Send>>,
+struct ProjectNode<'a> {
+    flow: &'a mut (dyn Node + Send),
     projection: Vec<Column>,
+    properties: Option<Properties<'a>>,
 }
 
 #[async_trait]
-impl Node for ProjectNode {
+impl<'a> Node for ProjectNode<'a> {
     async fn open(&mut self) -> Result<(), OpenError> {
+        self.flow.open().await?;
+
         Ok(())
     }
 
     async fn next(&mut self) -> Result<Option<Tuple>, NextError> {
-        todo!()
+        if let Some(tuple) = self.flow.next().await? {
+            let mut projected = Tuple::with_capacity(self.projection.len());
+
+            tuple.columns.iter().enumerate().for_each(|(i, col)| -> () {
+                if self.projection.contains(col) {
+                    projected.data.push(tuple.data[i].clone());
+                }
+            });
+
+            Ok(Some(tuple))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn close(&mut self) -> Result<(), CloseError> {
-        Ok(())
+        self.flow.close().await
     }
 
     async fn properties(&mut self) -> Result<Properties, PropertiesError> {
-        todo!()
+        if let Some(props) = &self.properties {
+            Ok(props.clone())
+        } else {
+            let upstream_props = self.flow.properties().await?;
+
+            Ok(Properties {
+                columns: &self.projection,
+                sort_by: upstream_props.sort_by,
+            })
+        }
     }
 }
