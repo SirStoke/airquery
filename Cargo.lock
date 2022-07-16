@@ -12,6 +12,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sqlparser",
  "thiserror",
  "tokio",
 ]
@@ -798,6 +799,15 @@ checksum = "66d72b759436ae32898a2af0a14218dbf55efde3feeb170eb623637db85ee1e0"
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "sqlparser"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f531637a13132fa3d38c54d4cd8f115905e5dc3e72f6e77bd6160481f482e25d"
+dependencies = [
+ "log",
 ]
 
 [[package]]
