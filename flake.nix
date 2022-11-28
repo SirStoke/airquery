@@ -25,7 +25,7 @@
 
         # For `nix develop` (optional, can be skipped):
         devShell = pkgs.mkShell {
-          nativeBuildInputs = with pkgs; [ rustc cargo jetbrains.idea-ultimate ];
+          nativeBuildInputs = with pkgs; [ rustc cargo jetbrains.idea-ultimate libiconv ];
         };
       }
     );
