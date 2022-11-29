@@ -25,7 +25,7 @@
 
         # For `nix develop` (optional, can be skipped):
         devShell = pkgs.mkShell {
-          nativeBuildInputs = with pkgs; [ rustc cargo jetbrains.idea-ultimate libiconv ];
+          nativeBuildInputs = with pkgs; [ darwin.apple_sdk.frameworks.Security pkgconfig openssl rustc cargo jetbrains.idea-ultimate libiconv ];
         };
       }
     );
