@@ -54,10 +54,6 @@ impl Cli {
             Err(ParserError::TokenizerError(err)) => self.quit_because(err),
             Ok(ast) => {
                 println!("AST: {:?}", ast);
-
-                let result = super::compiler::compile(&ast);
-
-                println!("Result: {:?}", result);
             }
         }
     }
