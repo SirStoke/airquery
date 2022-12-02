@@ -1,10 +1,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::{DataType, Field, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::{TableProvider, TableType};
-use datafusion::execution::context::SessionState;
+use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::logical_expr::Expr;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_plan::{
+    project_schema, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
+};
 use reqwest::{Client, Method, Request, Response, Url};
 use serde::Deserialize;
 use serde_json::Value;
@@ -27,7 +30,7 @@ pub struct Records {
     pub records: Vec<Record>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct AirtableField {
     description: String,
@@ -37,7 +40,7 @@ struct AirtableField {
     type_: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct Table<N> {
     fields: Vec<AirtableField>,
     name: N,
@@ -57,6 +60,7 @@ struct Tables {
     tables: Vec<Table<Option<String>>>,
 }
 
+#[derive(Debug)]
 struct AirtableClient {
     client: Client,
     api_key: String,
@@ -83,29 +87,6 @@ pub struct Airtable {
 }
 
 impl Airtable {
-    async fn records(&self, page_size: u16, offset: u16) -> Result<Records> {
-        let url = Url::parse(&format!(
-            "https://api.airtable.com/v0/{}/{}",
-            self.base, self.table.name
-        ))?;
-
-        let request = self
-            .client
-            .get_request(url)
-            .query(&[
-                ("offset", offset.to_string()),
-                ("page_size", page_size.to_string()),
-            ])
-            .build()?;
-
-        Ok(self
-            .client
-            .execute(request)
-            .await?
-            .json::<Records>()
-            .await?)
-    }
-
     pub async fn new(table_name: String, base: String, api_key: String) -> Result<Self> {
         let reqwest_client = reqwest::Client::new();
 
@@ -118,6 +99,7 @@ impl Airtable {
             "https://api.airtable.com/v0/meta/bases/{}/tables",
             base
         ))?;
+
         let request = client.get_request(url).build()?;
         let tables = client.execute(request).await?.json::<Tables>().await?;
 
@@ -128,11 +110,13 @@ impl Airtable {
             .map(|table| table.with_name(table_name))
             .unwrap();
 
+        let schema_ref = Self::build_schema_ref(&table);
+
         Ok(Self {
             table,
             base,
             api_key,
-            schema_ref: todo!(),
+            schema_ref,
             client,
         })
     }
@@ -155,7 +139,7 @@ impl Airtable {
             }
         });
 
-        todo!()
+        SchemaRef::new(Schema::new(fields.collect()))
     }
 }
 
@@ -166,11 +150,11 @@ impl TableProvider for Airtable {
     }
 
     fn schema(&self) -> SchemaRef {
-        todo!()
+        self.schema_ref.clone()
     }
 
     fn table_type(&self) -> TableType {
-        todo!()
+        TableType::Base
     }
 
     async fn scan(
@@ -180,6 +164,80 @@ impl TableProvider for Airtable {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        todo!()
+    }
+}
+
+#[derive(Debug)]
+struct AirtableScan {
+    projected_schema: SchemaRef,
+    base: String,
+    table: Table<String>,
+    client: AirtableClient,
+}
+
+impl AirtableScan {
+    async fn records(&self, page_size: u16, offset: u16) -> Result<Records> {
+        let url = Url::parse(&format!(
+            "https://api.airtable.com/v0/{}/{}",
+            self.base, self.table.name
+        ))?;
+
+        let request = self
+            .client
+            .get_request(url)
+            .query(&[
+                ("offset", offset.to_string()),
+                ("page_size", page_size.to_string()),
+            ])
+            .build()?;
+
+        Ok(self
+            .client
+            .execute(request)
+            .await?
+            .json::<Records>()
+            .await?)
+    }
+}
+
+impl ExecutionPlan for AirtableScan {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.projected_schema.clone()
+    }
+
+    fn output_partitioning(&self) -> Partitioning {
+        Partitioning::UnknownPartitioning(1)
+    }
+
+    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
+        None
+    }
+
+    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        todo!()
+    }
+
+    fn statistics(&self) -> Statistics {
         todo!()
     }
 }
