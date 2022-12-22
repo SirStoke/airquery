@@ -36,6 +36,7 @@ dependencies = [
  "async-trait",
  "clap",
  "datafusion",
+ "futures",
  "reqwest",
  "serde",
  "serde_json",

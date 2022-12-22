@@ -8,12 +8,14 @@ use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::{
     project_schema, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
 };
+use futures::{future, stream};
 use reqwest::{Client, Method, Request, Response, Url};
 use serde::Deserialize;
 use serde_json::Value;
 use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -79,21 +81,21 @@ impl AirtableClient {
 }
 
 pub struct Airtable {
-    table: Table<String>,
+    table: Arc<Table<String>>,
     base: String,
     api_key: String,
     schema_ref: SchemaRef,
-    client: AirtableClient,
+    client: Arc<AirtableClient>,
 }
 
 impl Airtable {
     pub async fn new(table_name: String, base: String, api_key: String) -> Result<Self> {
         let reqwest_client = reqwest::Client::new();
 
-        let client = AirtableClient {
+        let client = Arc::new(AirtableClient {
             client: reqwest_client,
             api_key: api_key.clone(),
-        };
+        });
 
         let url = Url::parse(&format!(
             "https://api.airtable.com/v0/meta/bases/{}/tables",
@@ -103,12 +105,14 @@ impl Airtable {
         let request = client.get_request(url).build()?;
         let tables = client.execute(request).await?.json::<Tables>().await?;
 
-        let table = tables
-            .tables
-            .into_iter()
-            .find(|t| t.name.as_ref() == Some(&table_name))
-            .map(|table| table.with_name(table_name))
-            .unwrap();
+        let table = Arc::new(
+            tables
+                .tables
+                .into_iter()
+                .find(|t| t.name.as_ref() == Some(&table_name))
+                .map(|table| table.with_name(table_name))
+                .unwrap(),
+        );
 
         let schema_ref = Self::build_schema_ref(&table);
 
@@ -164,7 +168,18 @@ impl TableProvider for Airtable {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        todo!()
+        let projected_schema = if let Some(projection) = projection {
+            Arc::new(self.schema().project(projection)?)
+        } else {
+            self.schema()
+        };
+
+        Ok(Arc::new(AirtableScan {
+            projected_schema,
+            base: self.base.clone(),
+            table: self.table.clone(),
+            client: self.client.clone(),
+        }))
     }
 }
 
@@ -172,8 +187,8 @@ impl TableProvider for Airtable {
 struct AirtableScan {
     projected_schema: SchemaRef,
     base: String,
-    table: Table<String>,
-    client: AirtableClient,
+    table: Arc<Table<String>>,
+    client: Arc<AirtableClient>,
 }
 
 impl AirtableScan {
@@ -234,6 +249,11 @@ impl ExecutionPlan for AirtableScan {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        let page_size = 500;
+
+        // TODO: properly stream stuff from Airtable
+        stream::unfold(0, |page| future::ready(Some(((), page + 1))));
+
         todo!()
     }
 

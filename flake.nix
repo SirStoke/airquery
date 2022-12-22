@@ -33,7 +33,7 @@
 
         # For `nix develop` (optional, can be skipped):
         devShell = pkgs.mkShell {
-          packages = with pkgs; [rustup dotfiles.packages.${system}.idea-ultimate autoPatchelfHook];
+          packages = with pkgs; [rustup dotfiles.packages.${system}.idea-ultimate autoPatchelfHook cargo-watch];
 
           shellHook =
             (
