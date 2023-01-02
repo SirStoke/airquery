@@ -7,12 +7,12 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 #[derive(Parser)]
 #[clap(author, version, about, name = "airquery", long_about = None)]
-struct Args {
+pub struct Args {
     query: String,
     #[clap(env = "AIRQUERY_API_KEY", short = 'k', long)]
-    airtable_api_key: String,
+    pub airtable_api_key: String,
     #[clap(env = "AIRQUERY_BASE", short = 'b', long)]
-    airtable_base: String,
+    pub airtable_base: String,
 }
 
 struct Colors {
@@ -22,7 +22,7 @@ struct Colors {
 
 pub struct Cli {
     stderr: StandardStream,
-    args: Args,
+    pub args: Args,
     colors: Colors,
 }
 

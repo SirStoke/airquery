@@ -1,22 +1,31 @@
+use crate::dataflow::connectors::airtable::AirtableColumnBuilder::BoolBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
+use datafusion::arrow::array::{
+    ArrayRef, BooleanBuilder, Float64Builder, StringBuilder, UInt8Builder,
+};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::error::ArrowError;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::{
-    project_schema, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
+    project_schema, ExecutionPlan, Partitioning, RecordBatchStream, SendableRecordBatchStream,
+    Statistics,
 };
-use futures::{future, stream};
+use futures::{future, stream, Stream};
 use reqwest::{Client, Method, Request, Response, Url};
+use serde::de::Unexpected::Float;
 use serde::Deserialize;
 use serde_json::Value;
 use std::any::Any;
-use std::collections::HashMap;
-use std::future::Future;
-use std::sync::atomic::AtomicUsize;
+use std::collections::{HashMap, HashSet};
+use std::ops::DerefMut;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use thiserror::Error;
 
 #[derive(Deserialize)]
@@ -27,15 +36,186 @@ pub struct Record {
     pub fields: HashMap<String, Value>,
 }
 
+#[derive(Error, Debug)]
+enum AirtableColumnBuilderError {
+    #[error("Invalid builder found ({column_type:?} can't be pushed into {builder_type:?})")]
+    InvalidBuilder {
+        column_type: String,
+        builder_type: String,
+    },
+
+    #[error("Unsupported column type: {column_type:?})")]
+    UnsupportedType { column_type: String },
+
+    #[error("Could not find arrow builder for {0}")]
+    FieldNotFound(String),
+}
+
+#[derive(Debug)]
+enum AirtableColumnBuilder {
+    BoolBuilder(BooleanBuilder),
+    NumberBuilder(Float64Builder),
+    StrBuilder(StringBuilder),
+
+    // Used by all-null columns
+    Null(BooleanBuilder),
+}
+
+use AirtableColumnBuilder::*;
+
+impl AirtableColumnBuilder {
+    fn is_null(&self) -> bool {
+        matches!(self, Null(_))
+    }
+
+    fn append_value(&mut self, value: &Value) -> Result<(), AirtableColumnBuilderError> {
+        match (self, value) {
+            (BoolBuilder(builder), Value::Bool(b)) => Ok(builder.append_value(*b)),
+
+            (NumberBuilder(builder), Value::Number(n)) => {
+                Ok(builder.append_value(n.as_f64().unwrap()))
+            }
+
+            (StrBuilder(builder), Value::String(s)) => Ok(builder.append_value(&s)),
+
+            (Null(builder), _) => Ok(builder.append_null()),
+
+            (builder, Value::Null) => Ok(builder.append_null()),
+
+            (builder, value) => Err(AirtableColumnBuilderError::InvalidBuilder {
+                column_type: format!("{:?}", value),
+                builder_type: format!("{:?}", builder),
+            }),
+        }
+    }
+
+    fn append_null(&mut self) {
+        match self {
+            NumberBuilder(builder) => builder.append_null(),
+            BoolBuilder(builder) => builder.append_null(),
+            StrBuilder(builder) => builder.append_null(),
+            Null(builder) => builder.append_null(),
+        }
+    }
+
+    fn from_value(value: &Value) -> Result<AirtableColumnBuilder, AirtableColumnBuilderError> {
+        match value {
+            Value::String(_) => {
+                let mut builder = StrBuilder(StringBuilder::new(0));
+
+                builder.append_value(value)?;
+
+                Ok(builder)
+            }
+
+            Value::Bool(_) => {
+                let mut builder = BoolBuilder(BooleanBuilder::new(0));
+
+                builder.append_value(value)?;
+
+                Ok(builder)
+            }
+
+            Value::Number(_) => {
+                let mut builder = NumberBuilder(Float64Builder::new(0));
+
+                builder.append_value(value)?;
+
+                Ok(builder)
+            }
+
+            // The caller _must_ try to search for a non-null value for this column. If they couldn't
+            // find one, let's default to a boolbuilder
+            Value::Null => Ok(BoolBuilder(BooleanBuilder::new(0))),
+
+            _ => Err(AirtableColumnBuilderError::UnsupportedType {
+                column_type: format!("{:?}", value),
+            }),
+        }
+    }
+
+    fn finish(&mut self) -> ArrayRef {
+        match self {
+            BoolBuilder(b) => Arc::new(b.finish()),
+            StrBuilder(s) => Arc::new(s.finish()),
+            NumberBuilder(n) => Arc::new(n.finish()),
+            Null(n) => Arc::new(n.finish()),
+        }
+    }
+}
+
+impl Record {
+    fn fill_builders(
+        &self,
+        builders: &mut HashMap<String, AirtableColumnBuilder>,
+    ) -> Result<(), AirtableColumnBuilderError> {
+        for (k, v) in self.fields.iter() {
+            if let Some(builder) = builders.get_mut(k) {
+                builder.append_value(v)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Deserialize)]
 pub struct Records {
     pub records: Vec<Record>,
 }
 
+impl Records {
+    fn build_columns(
+        &self,
+        schema_ref: SchemaRef,
+    ) -> Result<HashMap<String, AirtableColumnBuilder>> {
+        let mut builders: HashMap<String, AirtableColumnBuilder> = HashMap::new();
+        let projected_fields: HashSet<&String> =
+            schema_ref.fields.iter().map(|field| field.name()).collect();
+
+        // First, we create the arrow builders
+        for record in self.records.iter() {
+            for (k, v) in record.fields.iter() {
+                let curr_builder = builders.get(k);
+
+                println!("{}", k);
+
+                // We should create a builder if either one is missing, or a non-null value was
+                // found and we had a Null builder previously indexed
+                let should_insert_builder = (curr_builder.is_none()
+                    || (matches!(curr_builder, Some(b) if b.is_null()) && v != &Value::Null))
+                    && projected_fields.contains(&k);
+
+                if should_insert_builder {
+                    match AirtableColumnBuilder::from_value(v) {
+                        Ok(builder) => {
+                            builders.insert(k.clone(), builder);
+                        }
+
+                        Err(err) => eprintln!("{:?}", err),
+                    }
+                }
+            }
+        }
+
+        println!("{:?}", builders);
+        println!("{:?}", projected_fields);
+
+        // Then, we fill the builders with the actual records. We do this in two separate steps
+        // to make sure we have all columns in all records, and that we see a non-null column
+        // if there is one (to make out its type)
+        for record in self.records.iter() {
+            record.fill_builders(&mut builders)?;
+        }
+
+        Ok(builders)
+    }
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct AirtableField {
-    description: String,
+    description: Option<String>,
     id: String,
     name: String,
     #[serde(rename = "type")]
@@ -57,7 +237,7 @@ impl<N> Table<N> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct Tables {
     tables: Vec<Table<Option<String>>>,
 }
@@ -80,6 +260,7 @@ impl AirtableClient {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Airtable {
     table: Arc<Table<String>>,
     base: String,
@@ -104,6 +285,8 @@ impl Airtable {
 
         let request = client.get_request(url).build()?;
         let tables = client.execute(request).await?.json::<Tables>().await?;
+
+        println!("{:?}", tables);
 
         let table = Arc::new(
             tables
@@ -145,6 +328,25 @@ impl Airtable {
 
         SchemaRef::new(Schema::new(fields.collect()))
     }
+
+    async fn records(&self, page_size: u16, offset: u16) -> Result<Records> {
+        let url = Url::parse(&format!(
+            "https://api.airtable.com/v0/{}/{}?offset={}&page_size={}",
+            self.base,
+            self.table.name,
+            offset.to_string(),
+            page_size.to_string()
+        ))?;
+
+        let request = self.client.get_request(url).build()?;
+
+        Ok(self
+            .client
+            .execute(request)
+            .await?
+            .json::<Records>()
+            .await?)
+    }
 }
 
 #[async_trait]
@@ -175,44 +377,49 @@ impl TableProvider for Airtable {
         };
 
         Ok(Arc::new(AirtableScan {
+            airtable: self.clone(),
             projected_schema,
-            base: self.base.clone(),
-            table: self.table.clone(),
-            client: self.client.clone(),
         }))
     }
 }
 
 #[derive(Debug)]
 struct AirtableScan {
+    airtable: Airtable,
     projected_schema: SchemaRef,
-    base: String,
-    table: Arc<Table<String>>,
-    client: Arc<AirtableClient>,
 }
 
-impl AirtableScan {
-    async fn records(&self, page_size: u16, offset: u16) -> Result<Records> {
-        let url = Url::parse(&format!(
-            "https://api.airtable.com/v0/{}/{}",
-            self.base, self.table.name
-        ))?;
+struct AirtableStream<S>
+where
+    S: Stream<Item = Result<RecordBatch, ArrowError>>,
+{
+    stream: Pin<Box<S>>,
+    schema: SchemaRef,
+}
 
-        let request = self
-            .client
-            .get_request(url)
-            .query(&[
-                ("offset", offset.to_string()),
-                ("page_size", page_size.to_string()),
-            ])
-            .build()?;
+impl<S> Stream for AirtableStream<S>
+where
+    S: Stream<Item = Result<RecordBatch, ArrowError>>,
+{
+    type Item = Result<RecordBatch, ArrowError>;
 
-        Ok(self
-            .client
-            .execute(request)
-            .await?
-            .json::<Records>()
-            .await?)
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let stream = self.stream.as_mut();
+
+        stream.poll_next(cx)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.stream.size_hint()
+    }
+}
+
+impl<S> RecordBatchStream for AirtableStream<S>
+where
+    S: Stream<Item = Result<RecordBatch, ArrowError>>,
+{
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
     }
 }
 
@@ -246,18 +453,43 @@ impl ExecutionPlan for AirtableScan {
 
     fn execute(
         &self,
-        partition: usize,
-        context: Arc<TaskContext>,
+        _: usize,
+        _: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        let page_size = 500;
+        let airtable = self.airtable.clone();
 
-        // TODO: properly stream stuff from Airtable
-        stream::unfold(0, |page| future::ready(Some(((), page + 1))));
+        let batch_stream = stream::unfold(
+            (airtable, self.projected_schema.clone(), 0),
+            move |(airtable, schema_ref, page)| async move {
+                let page_size = 500;
+                let offset = page * page_size;
 
-        todo!()
+                match airtable.records(page_size, offset).await {
+                    Ok(records) => {
+                        let batch = RecordBatch::try_new(
+                            schema_ref.clone(),
+                            records
+                                .build_columns(schema_ref.clone())
+                                .unwrap()
+                                .values_mut()
+                                .map(|b| b.finish())
+                                .collect(),
+                        );
+
+                        Some((batch, (airtable, schema_ref, page + 1)))
+                    }
+                    Err(err) => None,
+                }
+            },
+        );
+
+        Ok(Box::pin(AirtableStream {
+            stream: Box::pin(batch_stream),
+            schema: self.projected_schema.clone(),
+        }))
     }
 
     fn statistics(&self) -> Statistics {
-        todo!()
+        Statistics::default()
     }
 }
