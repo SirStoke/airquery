@@ -5,6 +5,7 @@
     naersk.url = "github:nix-community/naersk";
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     dotfiles.url = "github:SirStoke/dotfiles-nix";
+    lldb-nixpkgs.url = "github:patryk4815/nixpkgs/74616a18ab828ff01ff9c9b050974ffaa8b98862";
   };
 
   outputs = {
@@ -12,11 +13,18 @@
     flake-utils,
     naersk,
     nixpkgs,
+    lldb-nixpkgs,
     dotfiles,
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
         pkgs = (import nixpkgs) {
+          inherit system;
+
+          config.allowUnfree = true;
+        };
+
+        lldb-pkgs = (import lldb-nixpkgs) {
           inherit system;
 
           config.allowUnfree = true;
@@ -33,7 +41,7 @@
 
         # For `nix develop` (optional, can be skipped):
         devShell = pkgs.mkShell {
-          packages = with pkgs; [rustup dotfiles.packages.${system}.idea-ultimate autoPatchelfHook cargo-watch];
+          packages = with pkgs; [ rustup dotfiles.packages.${system}.idea-ultimate autoPatchelfHook cargo-watch lldb-pkgs.lldb ];
 
           shellHook =
             (
@@ -51,7 +59,7 @@
               then [darwin.apple_sdk.frameworks.Security]
               else []
             )
-            ++ [pkgconfig openssl libiconv];
+            ++ [ pkgconfig openssl libiconv lldb ];
         };
       }
     );
