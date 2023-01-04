@@ -142,6 +142,10 @@ impl AirtableColumnBuilder {
             Null(n) => Arc::new(n.finish()),
         }
     }
+
+    fn null() -> AirtableColumnBuilder {
+        AirtableColumnBuilder::Null(BooleanBuilder::new(0))
+    }
 }
 
 impl Record {
@@ -149,9 +153,11 @@ impl Record {
         &self,
         builders: &mut HashMap<String, AirtableColumnBuilder>,
     ) -> Result<(), AirtableColumnBuilderError> {
-        for (k, v) in self.fields.iter() {
-            if let Some(builder) = builders.get_mut(k) {
-                builder.append_value(v)?;
+        for (field, builder) in builders.iter_mut() {
+            if let Some(value) = self.fields.get(field) {
+                builder.append_value(value)?;
+            } else {
+                builder.append_null();
             }
         }
 
@@ -170,8 +176,11 @@ impl Records {
         schema_ref: SchemaRef,
     ) -> Result<HashMap<String, AirtableColumnBuilder>> {
         let mut builders: HashMap<String, AirtableColumnBuilder> = HashMap::new();
-        let projected_fields: HashSet<&String> =
-            schema_ref.fields.iter().map(|field| field.name()).collect();
+        let projected_fields: HashSet<String> = schema_ref
+            .fields
+            .iter()
+            .map(|field| field.name().clone())
+            .collect();
 
         // First, we create the arrow builders
         for record in self.records.iter() {
@@ -184,7 +193,7 @@ impl Records {
                 // found and we had a Null builder previously indexed
                 let should_insert_builder = (curr_builder.is_none()
                     || (matches!(curr_builder, Some(b) if b.is_null()) && v != &Value::Null))
-                    && projected_fields.contains(&k);
+                    && projected_fields.contains(k);
 
                 if should_insert_builder {
                     match AirtableColumnBuilder::from_value(v) {
@@ -196,6 +205,15 @@ impl Records {
                     }
                 }
             }
+        }
+
+        let keys: HashSet<String> = builders.keys().cloned().collect();
+
+        // At this point, if a field is present in the projected schema but it isn't in the builders
+        // collected until now, it means that we couldn't find the field in any record, and it should
+        // be set as null
+        for missing_builder in projected_fields.difference(&keys) {
+            builders.insert(missing_builder.to_string(), AirtableColumnBuilder::null());
         }
 
         println!("{:?}", builders);
@@ -465,7 +483,7 @@ impl ExecutionPlan for AirtableScan {
                 let offset = page * page_size;
 
                 match airtable.records(page_size, offset).await {
-                    Ok(records) => {
+                    Ok(records) if !records.records.is_empty() => {
                         let batch = RecordBatch::try_new(
                             schema_ref.clone(),
                             records
@@ -478,7 +496,8 @@ impl ExecutionPlan for AirtableScan {
 
                         Some((batch, (airtable, schema_ref, page + 1)))
                     }
-                    Err(err) => None,
+                    Ok(_) => None,
+                    Err(_) => None,
                 }
             },
         );

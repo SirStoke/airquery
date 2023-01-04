@@ -74,6 +74,22 @@
         "type": "github"
       }
     },
+    "lldb-nixpkgs": {
+      "locked": {
+        "lastModified": 1672087887,
+        "narHash": "sha256-lSHIxZKu6sQ4RtZr7Xsur5LpJ/5DepypttHAvV/6mX4=",
+        "owner": "patryk4815",
+        "repo": "nixpkgs",
+        "rev": "74616a18ab828ff01ff9c9b050974ffaa8b98862",
+        "type": "github"
+      },
+      "original": {
+        "owner": "patryk4815",
+        "repo": "nixpkgs",
+        "rev": "74616a18ab828ff01ff9c9b050974ffaa8b98862",
+        "type": "github"
+      }
+    },
     "master-nixpkgs": {
       "locked": {
         "lastModified": 1671359686,
@@ -158,6 +174,7 @@
       "inputs": {
         "dotfiles": "dotfiles",
         "flake-utils": "flake-utils_2",
+        "lldb-nixpkgs": "lldb-nixpkgs",
         "naersk": "naersk",
         "nixpkgs": "nixpkgs_3"
       }
