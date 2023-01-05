@@ -41,15 +41,13 @@
 
         # For `nix develop` (optional, can be skipped):
         devShell = pkgs.mkShell {
-          packages = with pkgs; [ rustup dotfiles.packages.${system}.idea-ultimate autoPatchelfHook cargo-watch lldb-pkgs.lldb ];
+          packages = (with pkgs; [ rustup dotfiles.packages.${system}.idea-ultimate cargo-watch lldb-pkgs.lldb ]) ++ (pkgs.lib.lists.optional pkgs.stdenv.isLinux pkgs.autoPatchelfHook);
 
           shellHook =
             (
-              if pkgs.stdenv.isLinux
-              then ''
+              pkgs.lib.strings.optionalString pkgs.stdenv.isLinux ''
                 [[ -d "$HOME/.local/share/JetBrains/IntelliJIdea2022.3/intellij-rust" ]] && autoPatchelf $HOME/.local/share/JetBrains/IntelliJIdea2022.3/intellij-rust
               ''
-              else ""
             )
             + "rustup install stable";
 
