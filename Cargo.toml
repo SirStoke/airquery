@@ -14,8 +14,9 @@ reqwest = { version = "0.11", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-clap = { version = "3.2.8", features = ["derive", "env"] }
+clap = { version = "4.0.29", features = ["derive", "env"] }
 sqlparser = "0.18.0"
 termcolor = "1.1"
-datafusion = "11.0"
+datafusion = "15.0.0"
 futures = "0.3"
+indexmap = "1.9.2"

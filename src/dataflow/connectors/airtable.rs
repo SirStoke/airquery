@@ -16,6 +16,7 @@ use datafusion::physical_plan::{
     Statistics,
 };
 use futures::{future, stream, Stream};
+use indexmap::IndexMap;
 use reqwest::{Client, Method, Request, Response, Url};
 use serde::de::Unexpected::Float;
 use serde::Deserialize;
@@ -98,35 +99,19 @@ impl AirtableColumnBuilder {
         }
     }
 
+    /// Creates an AirtableColumnBuilder based on the column value. Importantly, it doesn't append
+    /// the value itself, leaving that responsibility to the caller
     fn from_value(value: &Value) -> Result<AirtableColumnBuilder, AirtableColumnBuilderError> {
         match value {
-            Value::String(_) => {
-                let mut builder = StrBuilder(StringBuilder::new(0));
+            Value::String(_) => Ok(StrBuilder(StringBuilder::new())),
 
-                builder.append_value(value)?;
+            Value::Bool(_) => Ok(BoolBuilder(BooleanBuilder::new())),
 
-                Ok(builder)
-            }
-
-            Value::Bool(_) => {
-                let mut builder = BoolBuilder(BooleanBuilder::new(0));
-
-                builder.append_value(value)?;
-
-                Ok(builder)
-            }
-
-            Value::Number(_) => {
-                let mut builder = NumberBuilder(Float64Builder::new(0));
-
-                builder.append_value(value)?;
-
-                Ok(builder)
-            }
+            Value::Number(_) => Ok(NumberBuilder(Float64Builder::new())),
 
             // The caller _must_ try to search for a non-null value for this column. If they couldn't
             // find one, let's default to a boolbuilder
-            Value::Null => Ok(BoolBuilder(BooleanBuilder::new(0))),
+            Value::Null => Ok(BoolBuilder(BooleanBuilder::new())),
 
             _ => Err(AirtableColumnBuilderError::UnsupportedType {
                 column_type: format!("{:?}", value),
@@ -144,16 +129,16 @@ impl AirtableColumnBuilder {
     }
 
     fn null() -> AirtableColumnBuilder {
-        AirtableColumnBuilder::Null(BooleanBuilder::new(0))
+        Null(BooleanBuilder::new())
     }
 }
 
 impl Record {
-    fn fill_builders(
-        &self,
-        builders: &mut HashMap<String, AirtableColumnBuilder>,
-    ) -> Result<(), AirtableColumnBuilderError> {
-        for (field, builder) in builders.iter_mut() {
+    fn fill_builders<'a, I>(&self, builders: I) -> Result<(), AirtableColumnBuilderError>
+    where
+        I: Iterator<Item = (&'a String, &'a mut AirtableColumnBuilder)>,
+    {
+        for (field, builder) in builders {
             if let Some(value) = self.fields.get(field) {
                 builder.append_value(value)?;
             } else {
@@ -174,8 +159,9 @@ impl Records {
     fn build_columns(
         &self,
         schema_ref: SchemaRef,
-    ) -> Result<HashMap<String, AirtableColumnBuilder>> {
-        let mut builders: HashMap<String, AirtableColumnBuilder> = HashMap::new();
+    ) -> Result<IndexMap<String, AirtableColumnBuilder>> {
+        let mut builders: IndexMap<String, AirtableColumnBuilder> = IndexMap::new();
+
         let projected_fields: HashSet<String> = schema_ref
             .fields
             .iter()
@@ -186,8 +172,6 @@ impl Records {
         for record in self.records.iter() {
             for (k, v) in record.fields.iter() {
                 let curr_builder = builders.get(k);
-
-                println!("{}", k);
 
                 // We should create a builder if either one is missing, or a non-null value was
                 // found and we had a Null builder previously indexed
@@ -216,15 +200,14 @@ impl Records {
             builders.insert(missing_builder.to_string(), AirtableColumnBuilder::null());
         }
 
-        println!("{:?}", builders);
-        println!("{:?}", projected_fields);
-
         // Then, we fill the builders with the actual records. We do this in two separate steps
         // to make sure we have all columns in all records, and that we see a non-null column
         // if there is one (to make out its type)
         for record in self.records.iter() {
-            record.fill_builders(&mut builders)?;
+            record.fill_builders(builders.iter_mut())?;
         }
+
+        dbg!(&builders);
 
         Ok(builders)
     }
@@ -304,8 +287,6 @@ impl Airtable {
         let request = client.get_request(url).build()?;
         let tables = client.execute(request).await?.json::<Tables>().await?;
 
-        println!("{:?}", tables);
-
         let table = Arc::new(
             tables
                 .tables
@@ -384,7 +365,7 @@ impl TableProvider for Airtable {
     async fn scan(
         &self,
         ctx: &SessionState,
-        projection: &Option<Vec<usize>>,
+        projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
@@ -484,15 +465,18 @@ impl ExecutionPlan for AirtableScan {
 
                 match airtable.records(page_size, offset).await {
                     Ok(records) if !records.records.is_empty() => {
-                        let batch = RecordBatch::try_new(
-                            schema_ref.clone(),
-                            records
-                                .build_columns(schema_ref.clone())
-                                .unwrap()
-                                .values_mut()
-                                .map(|b| b.finish())
-                                .collect(),
-                        );
+                        let columns: Vec<ArrayRef> = records
+                            .build_columns(schema_ref.clone())
+                            .unwrap()
+                            .values_mut()
+                            .map(|b| b.finish())
+                            .collect();
+
+                        dbg!(&columns);
+
+                        let batch = RecordBatch::try_new(schema_ref.clone(), columns);
+
+                        dbg!(&batch);
 
                         Some((batch, (airtable, schema_ref, page + 1)))
                     }
