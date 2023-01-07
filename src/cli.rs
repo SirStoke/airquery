@@ -1,29 +1,25 @@
 use clap::Parser;
-use sqlparser::dialect::GenericDialect;
-use sqlparser::parser::{Parser as SQLParser, ParserError};
-use std::io::Write;
-use std::process::exit;
-use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream};
 
 #[derive(Parser)]
 #[clap(author, version, about, name = "airquery", long_about = None)]
 pub struct Args {
-    query: String,
+    pub query: String,
     #[clap(env = "AIRQUERY_API_KEY", short = 'k', long)]
     pub airtable_api_key: String,
     #[clap(env = "AIRQUERY_BASE", short = 'b', long)]
     pub airtable_base: String,
 }
 
-struct Colors {
-    error: ColorSpec,
-    reset: ColorSpec,
+pub struct Colors {
+    pub error: ColorSpec,
+    pub reset: ColorSpec,
 }
 
 pub struct Cli {
-    stderr: StandardStream,
+    pub stderr: StandardStream,
     pub args: Args,
-    colors: Colors,
+    pub colors: Colors,
 }
 
 /// Entrypoint for the app
@@ -45,27 +41,5 @@ impl Cli {
             args,
             colors,
         }
-    }
-
-    /// Executes the query
-    pub fn execute(&mut self) {
-        match SQLParser::parse_sql(&GenericDialect {}, &self.args.query) {
-            Err(ParserError::ParserError(err)) => self.quit_because(err),
-            Err(ParserError::TokenizerError(err)) => self.quit_because(err),
-            Ok(ast) => {
-                println!("AST: {:?}", ast);
-            }
-        }
-    }
-
-    /// quits the process because of an error message
-    fn quit_because(&mut self, msg: String) -> ! {
-        self.stderr.set_color(&self.colors.error).unwrap();
-        write!(self.stderr, "Error: ").unwrap();
-
-        self.stderr.set_color(&self.colors.reset).unwrap();
-        writeln!(self.stderr, "{}", &msg).unwrap();
-
-        exit(-1)
     }
 }

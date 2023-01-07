@@ -19,10 +19,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    let mut schema_provider = MemorySchemaProvider::new();
+    let schema_provider = MemorySchemaProvider::new();
     schema_provider.register_table("transactions".to_string(), Arc::new(airtable))?;
 
-    let mut catalog_provider = MemoryCatalogProvider::new();
+    let catalog_provider = MemoryCatalogProvider::new();
 
     catalog_provider.register_schema("airtable", Arc::new(schema_provider))?;
 
@@ -31,9 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ctx.register_catalog("airtable", Arc::new(catalog_provider));
 
     // create a plan to run a SQL query
-    let df = ctx
-        .sql("SELECT * FROM airtable.airtable.transactions")
-        .await?;
+    let df = ctx.sql(&cli.args.query).await?;
 
     // execute and print results
     df.show().await?;

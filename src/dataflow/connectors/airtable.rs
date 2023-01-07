@@ -1,10 +1,9 @@
-use crate::dataflow::connectors::airtable::AirtableColumnBuilder::BoolBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
-use datafusion::arrow::array::{
-    ArrayRef, BooleanBuilder, Float64Builder, StringBuilder, UInt8Builder,
-};
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use chrono::{NaiveDate, NaiveTime};
+use datafusion::arrow::array::{ArrayRef, Date64Builder, Decimal128Builder, StringBuilder};
+use datafusion::arrow::compute::kernels::cast_utils::Parser;
+use datafusion::arrow::datatypes::{DataType, Date64Type, Field, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::{TableProvider, TableType};
@@ -12,19 +11,19 @@ use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::{
-    project_schema, ExecutionPlan, Partitioning, RecordBatchStream, SendableRecordBatchStream,
-    Statistics,
+    ExecutionPlan, Partitioning, RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
-use futures::{future, stream, Stream};
+use futures::{stream, Stream};
 use indexmap::IndexMap;
 use reqwest::{Client, Method, Request, Response, Url};
-use serde::de::Unexpected::Float;
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, Error as DecimalError};
 use serde::Deserialize;
 use serde_json::Value;
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
-use std::ops::DerefMut;
+use std::collections::HashMap;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use thiserror::Error;
@@ -45,41 +44,44 @@ enum AirtableColumnBuilderError {
         builder_type: String,
     },
 
-    #[error("Unsupported column type: {column_type:?})")]
-    UnsupportedType { column_type: String },
-
-    #[error("Could not find arrow builder for {0}")]
-    FieldNotFound(String),
+    #[error("Failed to parse decimal: {0}")]
+    DecimalError(#[from] DecimalError),
 }
 
 #[derive(Debug)]
 enum AirtableColumnBuilder {
-    BoolBuilder(BooleanBuilder),
-    NumberBuilder(Float64Builder),
+    NumberBuilder(Decimal128Builder),
+    DateBuilder(Date64Builder),
     StrBuilder(StringBuilder),
-
-    // Used by all-null columns
-    Null(BooleanBuilder),
 }
 
 use AirtableColumnBuilder::*;
 
 impl AirtableColumnBuilder {
-    fn is_null(&self) -> bool {
-        matches!(self, Null(_))
-    }
-
     fn append_value(&mut self, value: &Value) -> Result<(), AirtableColumnBuilderError> {
         match (self, value) {
-            (BoolBuilder(builder), Value::Bool(b)) => Ok(builder.append_value(*b)),
+            (NumberBuilder(builder), Value::String(n)) => {
+                let mut decimal = Decimal::from_str(n)?;
 
-            (NumberBuilder(builder), Value::Number(n)) => {
-                Ok(builder.append_value(n.as_f64().unwrap()))
+                decimal.rescale(10);
+
+                Ok(builder.append_value(decimal.to_i128().unwrap()))
             }
+
+            (builder, Value::Number(n)) => builder.append_value(&Value::String(n.to_string())),
 
             (StrBuilder(builder), Value::String(s)) => Ok(builder.append_value(&s)),
 
-            (Null(builder), _) => Ok(builder.append_null()),
+            (DateBuilder(builder), Value::String(d)) => {
+                let date_time = Date64Type::parse(d).or_else(|| {
+                    // Let's try to parse the string as a date if parsing it as a date-time fails
+                    NaiveDate::from_str(d)
+                        .ok()
+                        .map(|date| date.and_time(NaiveTime::default()).timestamp())
+                });
+
+                Ok(builder.append_value(date_time.unwrap()))
+            }
 
             (builder, Value::Null) => Ok(builder.append_null()),
 
@@ -93,43 +95,38 @@ impl AirtableColumnBuilder {
     fn append_null(&mut self) {
         match self {
             NumberBuilder(builder) => builder.append_null(),
-            BoolBuilder(builder) => builder.append_null(),
+            DateBuilder(builder) => builder.append_null(),
             StrBuilder(builder) => builder.append_null(),
-            Null(builder) => builder.append_null(),
-        }
-    }
-
-    /// Creates an AirtableColumnBuilder based on the column value. Importantly, it doesn't append
-    /// the value itself, leaving that responsibility to the caller
-    fn from_value(value: &Value) -> Result<AirtableColumnBuilder, AirtableColumnBuilderError> {
-        match value {
-            Value::String(_) => Ok(StrBuilder(StringBuilder::new())),
-
-            Value::Bool(_) => Ok(BoolBuilder(BooleanBuilder::new())),
-
-            Value::Number(_) => Ok(NumberBuilder(Float64Builder::new())),
-
-            // The caller _must_ try to search for a non-null value for this column. If they couldn't
-            // find one, let's default to a boolbuilder
-            Value::Null => Ok(BoolBuilder(BooleanBuilder::new())),
-
-            _ => Err(AirtableColumnBuilderError::UnsupportedType {
-                column_type: format!("{:?}", value),
-            }),
         }
     }
 
     fn finish(&mut self) -> ArrayRef {
         match self {
-            BoolBuilder(b) => Arc::new(b.finish()),
             StrBuilder(s) => Arc::new(s.finish()),
             NumberBuilder(n) => Arc::new(n.finish()),
-            Null(n) => Arc::new(n.finish()),
+            DateBuilder(d) => Arc::new(d.finish()),
         }
     }
 
-    fn null() -> AirtableColumnBuilder {
-        Null(BooleanBuilder::new())
+    fn from_schema_ref(schema_ref: SchemaRef) -> IndexMap<String, AirtableColumnBuilder> {
+        let mut builders: IndexMap<String, AirtableColumnBuilder> = IndexMap::new();
+
+        dbg!(schema_ref.clone());
+
+        for field in schema_ref.fields.iter() {
+            let builder = match field.data_type() {
+                DataType::Utf8 => Some(StrBuilder(StringBuilder::new())),
+                DataType::Decimal128(38, 10) => Some(NumberBuilder(Decimal128Builder::new())),
+                DataType::Date64 => Some(DateBuilder(Date64Builder::new())),
+                _ => None,
+            };
+
+            if let Some(builder) = builder {
+                builders.insert(field.name().clone(), builder);
+            }
+        }
+
+        builders
     }
 }
 
@@ -160,49 +157,9 @@ impl Records {
         &self,
         schema_ref: SchemaRef,
     ) -> Result<IndexMap<String, AirtableColumnBuilder>> {
-        let mut builders: IndexMap<String, AirtableColumnBuilder> = IndexMap::new();
+        let mut builders: IndexMap<String, AirtableColumnBuilder> =
+            AirtableColumnBuilder::from_schema_ref(schema_ref.clone());
 
-        let projected_fields: HashSet<String> = schema_ref
-            .fields
-            .iter()
-            .map(|field| field.name().clone())
-            .collect();
-
-        // First, we create the arrow builders
-        for record in self.records.iter() {
-            for (k, v) in record.fields.iter() {
-                let curr_builder = builders.get(k);
-
-                // We should create a builder if either one is missing, or a non-null value was
-                // found and we had a Null builder previously indexed
-                let should_insert_builder = (curr_builder.is_none()
-                    || (matches!(curr_builder, Some(b) if b.is_null()) && v != &Value::Null))
-                    && projected_fields.contains(k);
-
-                if should_insert_builder {
-                    match AirtableColumnBuilder::from_value(v) {
-                        Ok(builder) => {
-                            builders.insert(k.clone(), builder);
-                        }
-
-                        Err(err) => eprintln!("{:?}", err),
-                    }
-                }
-            }
-        }
-
-        let keys: HashSet<String> = builders.keys().cloned().collect();
-
-        // At this point, if a field is present in the projected schema but it isn't in the builders
-        // collected until now, it means that we couldn't find the field in any record, and it should
-        // be set as null
-        for missing_builder in projected_fields.difference(&keys) {
-            builders.insert(missing_builder.to_string(), AirtableColumnBuilder::null());
-        }
-
-        // Then, we fill the builders with the actual records. We do this in two separate steps
-        // to make sure we have all columns in all records, and that we see a non-null column
-        // if there is one (to make out its type)
         for record in self.records.iter() {
             record.fill_builders(builders.iter_mut())?;
         }
@@ -216,8 +173,6 @@ impl Records {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct AirtableField {
-    description: Option<String>,
-    id: String,
     name: String,
     #[serde(rename = "type")]
     type_: String,
@@ -265,7 +220,6 @@ impl AirtableClient {
 pub struct Airtable {
     table: Arc<Table<String>>,
     base: String,
-    api_key: String,
     schema_ref: SchemaRef,
     client: Arc<AirtableClient>,
 }
@@ -301,7 +255,6 @@ impl Airtable {
         Ok(Self {
             table,
             base,
-            api_key,
             schema_ref,
             client,
         })
@@ -311,6 +264,8 @@ impl Airtable {
         let fields = table.fields.iter().filter_map(|field| {
             let type_ = match field.type_.as_str() {
                 "singleLineText" => Some(DataType::Utf8),
+                "currency" => Some(DataType::Decimal128(38, 10)),
+                "date" => Some(DataType::Date64),
                 any => {
                     println!("Unknown type: {}", any);
 
@@ -364,10 +319,10 @@ impl TableProvider for Airtable {
 
     async fn scan(
         &self,
-        ctx: &SessionState,
+        _ctx: &SessionState,
         projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        limit: Option<usize>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let projected_schema = if let Some(projection) = projection {
             Arc::new(self.schema().project(projection)?)
