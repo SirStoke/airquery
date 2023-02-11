@@ -65,7 +65,17 @@ impl AirtableColumnBuilder {
 
                 decimal.rescale(10);
 
-                Ok(builder.append_value(decimal.to_i128().unwrap()))
+                let unpacked = decimal.unpack();
+
+                let mut number: i128 = ((i128::from(unpacked.hi) << 64)
+                    | i128::from(unpacked.mid) << 32)
+                    | i128::from(unpacked.lo);
+
+                if unpacked.negative {
+                    number = -number;
+                }
+
+                Ok(builder.append_value(number))
             }
 
             (builder, Value::Number(n)) => builder.append_value(&Value::String(n.to_string())),
@@ -110,8 +120,6 @@ impl AirtableColumnBuilder {
 
     fn from_schema_ref(schema_ref: SchemaRef) -> IndexMap<String, AirtableColumnBuilder> {
         let mut builders: IndexMap<String, AirtableColumnBuilder> = IndexMap::new();
-
-        dbg!(schema_ref.clone());
 
         for field in schema_ref.fields.iter() {
             let builder = match field.data_type() {
@@ -163,8 +171,6 @@ impl Records {
         for record in self.records.iter() {
             record.fill_builders(builders.iter_mut())?;
         }
-
-        dbg!(&builders);
 
         Ok(builders)
     }
@@ -239,7 +245,9 @@ impl Airtable {
         ))?;
 
         let request = client.get_request(url).build()?;
-        let tables = client.execute(request).await?.json::<Tables>().await?;
+        let res = client.execute(request).await?;
+
+        let tables: Tables = res.json::<Tables>().await?;
 
         let table = Arc::new(
             tables
@@ -427,11 +435,7 @@ impl ExecutionPlan for AirtableScan {
                             .map(|b| b.finish())
                             .collect();
 
-                        dbg!(&columns);
-
                         let batch = RecordBatch::try_new(schema_ref.clone(), columns);
-
-                        dbg!(&batch);
 
                         Some((batch, (airtable, schema_ref, page + 1)))
                     }
