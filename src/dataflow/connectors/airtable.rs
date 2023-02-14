@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{NaiveDate, NaiveTime};
+use chrono::{Datelike, NaiveDate, NaiveTime, ParseError};
 use datafusion::arrow::array::{ArrayRef, Date64Builder, Decimal128Builder, StringBuilder};
 use datafusion::arrow::compute::kernels::cast_utils::Parser;
 use datafusion::arrow::datatypes::{DataType, Date64Type, Field, Schema, SchemaRef};
@@ -46,6 +46,9 @@ enum AirtableColumnBuilderError {
 
     #[error("Failed to parse decimal: {0}")]
     DecimalError(#[from] DecimalError),
+
+    #[error("Failed to parse value: {0}")]
+    ParseError(#[from] ParseError),
 }
 
 #[derive(Debug)]
@@ -83,14 +86,9 @@ impl AirtableColumnBuilder {
             (StrBuilder(builder), Value::String(s)) => Ok(builder.append_value(&s)),
 
             (DateBuilder(builder), Value::String(d)) => {
-                let date_time = Date64Type::parse(d).or_else(|| {
-                    // Let's try to parse the string as a date if parsing it as a date-time fails
-                    NaiveDate::from_str(d)
-                        .ok()
-                        .map(|date| date.and_time(NaiveTime::default()).timestamp())
-                });
+                let d = Date64Type::from_naive_date(NaiveDate::from_str(d)?);
 
-                Ok(builder.append_value(date_time.unwrap()))
+                Ok(builder.append_value(d))
             }
 
             (builder, Value::Null) => Ok(builder.append_null()),
