@@ -4,7 +4,6 @@ mod dataflow;
 use crate::cli::Cli;
 use crate::dataflow::connectors::airtable::Airtable;
 use datafusion::catalog::catalog::{CatalogProvider, MemoryCatalogProvider};
-use datafusion::catalog::schema::{MemorySchemaProvider, SchemaProvider};
 use datafusion::prelude::*;
 use std::sync::Arc;
 
@@ -12,19 +11,14 @@ use std::sync::Arc;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::new();
 
-    let airtable = Airtable::new(
-        "Transactions".to_string(),
-        cli.args.airtable_base,
-        cli.args.airtable_api_key,
-    )
-    .await?;
-
-    let schema_provider = MemorySchemaProvider::new();
-    schema_provider.register_table("transactions".to_string(), Arc::new(airtable))?;
+    let airtable =
+        Airtable::new(cli.args.airtable_base, cli.args.airtable_api_key)
+            .await?;
 
     let catalog_provider = MemoryCatalogProvider::new();
 
-    catalog_provider.register_schema("airtable", Arc::new(schema_provider))?;
+    catalog_provider
+        .register_schema("airtable", airtable.schema_provider()?)?;
 
     let ctx = SessionContext::new();
 

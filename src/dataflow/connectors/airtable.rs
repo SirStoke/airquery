@@ -1,22 +1,27 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{Datelike, NaiveDate, NaiveTime, ParseError};
-use datafusion::arrow::array::{ArrayRef, Date64Builder, Decimal128Builder, StringBuilder};
-use datafusion::arrow::compute::kernels::cast_utils::Parser;
-use datafusion::arrow::datatypes::{DataType, Date64Type, Field, Schema, SchemaRef};
+use chrono::{NaiveDate, ParseError};
+use datafusion::arrow::array::{
+    ArrayRef, Date64Builder, Decimal128Builder, StringBuilder,
+};
+use datafusion::arrow::datatypes::{
+    DataType, Date64Type, Field, Schema, SchemaRef,
+};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::catalog::schema::{MemorySchemaProvider, SchemaProvider};
 use datafusion::datasource::{TableProvider, TableType};
+use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::{
-    ExecutionPlan, Partitioning, RecordBatchStream, SendableRecordBatchStream, Statistics,
+    ExecutionPlan, Partitioning, RecordBatchStream, SendableRecordBatchStream,
+    Statistics,
 };
 use futures::{stream, Stream};
 use indexmap::IndexMap;
 use reqwest::{Client, Method, Request, Response, Url};
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::{Decimal, Error as DecimalError};
 use serde::Deserialize;
 use serde_json::Value;
@@ -39,10 +44,7 @@ pub struct Record {
 #[derive(Error, Debug)]
 enum AirtableColumnBuilderError {
     #[error("Invalid builder found ({column_type:?} can't be pushed into {builder_type:?})")]
-    InvalidBuilder {
-        column_type: String,
-        builder_type: String,
-    },
+    InvalidBuilder { column_type: String, builder_type: String },
 
     #[error("Failed to parse decimal: {0}")]
     DecimalError(#[from] DecimalError),
@@ -61,7 +63,10 @@ enum AirtableColumnBuilder {
 use AirtableColumnBuilder::*;
 
 impl AirtableColumnBuilder {
-    fn append_value(&mut self, value: &Value) -> Result<(), AirtableColumnBuilderError> {
+    fn append_value(
+        &mut self,
+        value: &Value,
+    ) -> Result<(), AirtableColumnBuilderError> {
         match (self, value) {
             (NumberBuilder(builder), Value::String(n)) => {
                 let mut decimal = Decimal::from_str(n)?;
@@ -81,9 +86,13 @@ impl AirtableColumnBuilder {
                 Ok(builder.append_value(number))
             }
 
-            (builder, Value::Number(n)) => builder.append_value(&Value::String(n.to_string())),
+            (builder, Value::Number(n)) => {
+                builder.append_value(&Value::String(n.to_string()))
+            }
 
-            (StrBuilder(builder), Value::String(s)) => Ok(builder.append_value(&s)),
+            (StrBuilder(builder), Value::String(s)) => {
+                Ok(builder.append_value(&s))
+            }
 
             (DateBuilder(builder), Value::String(d)) => {
                 let d = Date64Type::from_naive_date(NaiveDate::from_str(d)?);
@@ -93,10 +102,12 @@ impl AirtableColumnBuilder {
 
             (builder, Value::Null) => Ok(builder.append_null()),
 
-            (builder, value) => Err(AirtableColumnBuilderError::InvalidBuilder {
-                column_type: format!("{:?}", value),
-                builder_type: format!("{:?}", builder),
-            }),
+            (builder, value) => {
+                Err(AirtableColumnBuilderError::InvalidBuilder {
+                    column_type: format!("{:?}", value),
+                    builder_type: format!("{:?}", builder),
+                })
+            }
         }
     }
 
@@ -116,13 +127,18 @@ impl AirtableColumnBuilder {
         }
     }
 
-    fn from_schema_ref(schema_ref: SchemaRef) -> IndexMap<String, AirtableColumnBuilder> {
-        let mut builders: IndexMap<String, AirtableColumnBuilder> = IndexMap::new();
+    fn from_schema_ref(
+        schema_ref: SchemaRef,
+    ) -> IndexMap<String, AirtableColumnBuilder> {
+        let mut builders: IndexMap<String, AirtableColumnBuilder> =
+            IndexMap::new();
 
         for field in schema_ref.fields.iter() {
             let builder = match field.data_type() {
                 DataType::Utf8 => Some(StrBuilder(StringBuilder::new())),
-                DataType::Decimal128(38, 10) => Some(NumberBuilder(Decimal128Builder::new())),
+                DataType::Decimal128(38, 10) => {
+                    Some(NumberBuilder(Decimal128Builder::new()))
+                }
                 DataType::Date64 => Some(DateBuilder(Date64Builder::new())),
                 _ => None,
             };
@@ -137,7 +153,10 @@ impl AirtableColumnBuilder {
 }
 
 impl Record {
-    fn fill_builders<'a, I>(&self, builders: I) -> Result<(), AirtableColumnBuilderError>
+    fn fill_builders<'a, I>(
+        &self,
+        builders: I,
+    ) -> Result<(), AirtableColumnBuilderError>
     where
         I: Iterator<Item = (&'a String, &'a mut AirtableColumnBuilder)>,
     {
@@ -190,10 +209,7 @@ struct Table<N> {
 
 impl<N> Table<N> {
     fn with_name<U>(self, name: U) -> Table<U> {
-        Table {
-            fields: self.fields,
-            name,
-        }
+        Table { fields: self.fields, name }
     }
 }
 
@@ -206,13 +222,12 @@ struct Tables {
 struct AirtableClient {
     client: Client,
     api_key: String,
+    base: String,
 }
 
 impl AirtableClient {
     fn get_request(&self, url: Url) -> reqwest::RequestBuilder {
-        self.client
-            .request(Method::GET, url)
-            .bearer_auth(self.api_key.clone())
+        self.client.request(Method::GET, url).bearer_auth(self.api_key.clone())
     }
 
     async fn execute(&self, request: Request) -> Result<Response> {
@@ -222,24 +237,24 @@ impl AirtableClient {
 
 #[derive(Debug, Clone)]
 pub struct Airtable {
-    table: Arc<Table<String>>,
-    base: String,
-    schema_ref: SchemaRef,
+    tables: Arc<Vec<Table<String>>>,
+    schema_refs: Vec<SchemaRef>,
     client: Arc<AirtableClient>,
 }
 
 impl Airtable {
-    pub async fn new(table_name: String, base: String, api_key: String) -> Result<Self> {
+    pub async fn new(base: String, api_key: String) -> Result<Self> {
         let reqwest_client = reqwest::Client::new();
 
         let client = Arc::new(AirtableClient {
             client: reqwest_client,
             api_key: api_key.clone(),
+            base: base,
         });
 
         let url = Url::parse(&format!(
             "https://api.airtable.com/v0/meta/bases/{}/tables",
-            base
+            &client.base
         ))?;
 
         let request = client.get_request(url).build()?;
@@ -247,23 +262,22 @@ impl Airtable {
 
         let tables: Tables = res.json::<Tables>().await?;
 
-        let table = Arc::new(
-            tables
-                .tables
-                .into_iter()
-                .find(|t| t.name.as_ref() == Some(&table_name))
-                .map(|table| table.with_name(table_name))
-                .unwrap(),
-        );
+        let tables: Vec<Table<String>> = tables
+            .tables
+            .into_iter()
+            .filter_map(|table| {
+                let table_name = table.name.clone();
 
-        let schema_ref = Self::build_schema_ref(&table);
+                table_name.map(|name| table.with_name(name))
+            })
+            .collect();
 
-        Ok(Self {
-            table,
-            base,
-            schema_ref,
-            client,
-        })
+        let schema_refs = tables
+            .iter()
+            .map(|table| Self::build_schema_ref(&table))
+            .collect::<Vec<SchemaRef>>();
+
+        Ok(Self { tables: Arc::new(tables), schema_refs, client })
     }
 
     fn build_schema_ref(table: &Table<String>) -> SchemaRef {
@@ -289,28 +303,53 @@ impl Airtable {
         SchemaRef::new(Schema::new(fields.collect()))
     }
 
+    pub fn schema_provider(
+        &self,
+    ) -> DataFusionResult<Arc<dyn SchemaProvider>> {
+        let schema_provider = MemorySchemaProvider::new();
+
+        for (table, schema_ref) in
+            self.tables.iter().zip(self.schema_refs.iter())
+        {
+            schema_provider.register_table(
+                table.name.clone(),
+                Arc::new(AirtableTableProvider {
+                    table_name: table.name.clone(),
+                    schema_ref: schema_ref.clone(),
+                    client: self.client.clone(),
+                }),
+            )?;
+        }
+
+        Ok(Arc::new(schema_provider))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AirtableTableProvider {
+    table_name: String,
+    schema_ref: SchemaRef,
+    client: Arc<AirtableClient>,
+}
+
+impl AirtableTableProvider {
     async fn records(&self, page_size: u16, offset: u16) -> Result<Records> {
         let url = Url::parse(&format!(
             "https://api.airtable.com/v0/{}/{}?offset={}&page_size={}",
-            self.base,
-            self.table.name,
+            self.client.base,
+            &self.table_name,
             offset.to_string(),
             page_size.to_string()
         ))?;
 
         let request = self.client.get_request(url).build()?;
 
-        Ok(self
-            .client
-            .execute(request)
-            .await?
-            .json::<Records>()
-            .await?)
+        Ok(self.client.execute(request).await?.json::<Records>().await?)
     }
 }
 
 #[async_trait]
-impl TableProvider for Airtable {
+impl TableProvider for AirtableTableProvider {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -337,7 +376,7 @@ impl TableProvider for Airtable {
         };
 
         Ok(Arc::new(AirtableScan {
-            airtable: self.clone(),
+            airtable_table: self.clone(),
             projected_schema,
         }))
     }
@@ -345,7 +384,7 @@ impl TableProvider for Airtable {
 
 #[derive(Debug)]
 struct AirtableScan {
-    airtable: Airtable,
+    airtable_table: AirtableTableProvider,
     projected_schema: SchemaRef,
 }
 
@@ -363,7 +402,10 @@ where
 {
     type Item = Result<RecordBatch, ArrowError>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
         let stream = self.stream.as_mut();
 
         stream.poll_next(cx)
@@ -416,7 +458,7 @@ impl ExecutionPlan for AirtableScan {
         _: usize,
         _: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        let airtable = self.airtable.clone();
+        let airtable = self.airtable_table.clone();
 
         let batch_stream = stream::unfold(
             (airtable, self.projected_schema.clone(), 0),
@@ -433,7 +475,8 @@ impl ExecutionPlan for AirtableScan {
                             .map(|b| b.finish())
                             .collect();
 
-                        let batch = RecordBatch::try_new(schema_ref.clone(), columns);
+                        let batch =
+                            RecordBatch::try_new(schema_ref.clone(), columns);
 
                         Some((batch, (airtable, schema_ref, page + 1)))
                     }

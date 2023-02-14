@@ -28,18 +28,12 @@ impl Cli {
         let args = Args::parse();
         let stderr = StandardStream::stderr(ColorChoice::Always);
 
-        let mut colors = Colors {
-            error: ColorSpec::new(),
-            reset: ColorSpec::new(),
-        };
+        let mut colors =
+            Colors { error: ColorSpec::new(), reset: ColorSpec::new() };
 
         colors.error.set_fg(Some(Color::Red));
         colors.reset.set_fg(None);
 
-        Cli {
-            stderr,
-            args,
-            colors,
-        }
+        Cli { stderr, args, colors }
     }
 }
