@@ -287,7 +287,7 @@ impl Airtable {
                 "currency" => Some(DataType::Decimal128(38, 10)),
                 "date" => Some(DataType::Date64),
                 any => {
-                    println!("Unknown type: {}", any);
+                    println!("Unsupported type: {}", any);
 
                     None
                 }
@@ -312,7 +312,7 @@ impl Airtable {
             self.tables.iter().zip(self.schema_refs.iter())
         {
             schema_provider.register_table(
-                table.name.clone(),
+                table.name.clone().to_lowercase(),
                 Arc::new(AirtableTableProvider {
                     table_name: table.name.clone(),
                     schema_ref: schema_ref.clone(),
