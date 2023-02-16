@@ -9,6 +9,13 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if cfg!(debug_assertions) {
+        // We ignore the error if a .env file is not present
+        let _ = dotenvy::dotenv();
+    }
+
+    simple_logger::init_with_env().unwrap();
+
     let cli = Cli::new();
 
     let airtable =

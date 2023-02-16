@@ -21,6 +21,7 @@ use datafusion::physical_plan::{
 };
 use futures::{stream, Stream};
 use indexmap::IndexMap;
+use log::debug;
 use reqwest::{Client, Method, Request, Response, Url};
 use rust_decimal::{Decimal, Error as DecimalError};
 use serde::Deserialize;
@@ -233,12 +234,31 @@ impl AirtableClient {
     async fn execute(&self, request: Request) -> Result<Response> {
         self.client.execute(request).await.map_err(|err| err.into())
     }
+
+    async fn records(
+        &self,
+        table_name: &str,
+        page_size: u16,
+        offset: u16,
+    ) -> Result<Records> {
+        let url = Url::parse(&format!(
+            "https://api.airtable.com/v0/{}/{}?offset={}&page_size={}",
+            self.base,
+            table_name,
+            offset.to_string(),
+            page_size.to_string()
+        ))?;
+
+        let request = self.get_request(url).build()?;
+
+        Ok(self.client.execute(request).await?.json::<Records>().await?)
+    }
 }
 
+/// Entrypoint for interacting with Airtable
 #[derive(Debug, Clone)]
 pub struct Airtable {
     tables: Arc<Vec<Table<String>>>,
-    schema_refs: Vec<SchemaRef>,
     client: Arc<AirtableClient>,
 }
 
@@ -272,14 +292,41 @@ impl Airtable {
             })
             .collect();
 
-        let schema_refs = tables
-            .iter()
-            .map(|table| Self::build_schema_ref(&table))
-            .collect::<Vec<SchemaRef>>();
-
-        Ok(Self { tables: Arc::new(tables), schema_refs, client })
+        Ok(Self { tables: Arc::new(tables), client })
     }
 
+    /// Builds and returns an AirtableTableProvider containing all the tables we found in the provided
+    /// base
+    pub fn schema_provider(
+        &self,
+    ) -> DataFusionResult<Arc<dyn SchemaProvider>> {
+        let schema_provider = MemorySchemaProvider::new();
+
+        for table in self.tables.iter() {
+            let schema_ref = AirtableTableProvider::build_schema_ref(&table);
+
+            schema_provider.register_table(
+                table.name.clone().to_lowercase(),
+                Arc::new(AirtableTableProvider {
+                    table_name: table.name.clone(),
+                    client: self.client.clone(),
+                    schema_ref,
+                }),
+            )?;
+        }
+
+        Ok(Arc::new(schema_provider))
+    }
+}
+/// The implementation for DataFusion's SchemaProvider
+#[derive(Debug, Clone)]
+struct AirtableTableProvider {
+    table_name: String,
+    schema_ref: SchemaRef,
+    client: Arc<AirtableClient>,
+}
+
+impl AirtableTableProvider {
     fn build_schema_ref(table: &Table<String>) -> SchemaRef {
         let fields = table.fields.iter().filter_map(|field| {
             let type_ = match field.type_.as_str() {
@@ -287,7 +334,10 @@ impl Airtable {
                 "currency" => Some(DataType::Decimal128(38, 10)),
                 "date" => Some(DataType::Date64),
                 any => {
-                    println!("Unsupported type: {}", any);
+                    debug!(
+                        "Unsupported type: {}, will skip column {}",
+                        any, &field.name
+                    );
 
                     None
                 }
@@ -301,50 +351,6 @@ impl Airtable {
         });
 
         SchemaRef::new(Schema::new(fields.collect()))
-    }
-
-    pub fn schema_provider(
-        &self,
-    ) -> DataFusionResult<Arc<dyn SchemaProvider>> {
-        let schema_provider = MemorySchemaProvider::new();
-
-        for (table, schema_ref) in
-            self.tables.iter().zip(self.schema_refs.iter())
-        {
-            schema_provider.register_table(
-                table.name.clone().to_lowercase(),
-                Arc::new(AirtableTableProvider {
-                    table_name: table.name.clone(),
-                    schema_ref: schema_ref.clone(),
-                    client: self.client.clone(),
-                }),
-            )?;
-        }
-
-        Ok(Arc::new(schema_provider))
-    }
-}
-
-#[derive(Debug, Clone)]
-struct AirtableTableProvider {
-    table_name: String,
-    schema_ref: SchemaRef,
-    client: Arc<AirtableClient>,
-}
-
-impl AirtableTableProvider {
-    async fn records(&self, page_size: u16, offset: u16) -> Result<Records> {
-        let url = Url::parse(&format!(
-            "https://api.airtable.com/v0/{}/{}?offset={}&page_size={}",
-            self.client.base,
-            &self.table_name,
-            offset.to_string(),
-            page_size.to_string()
-        ))?;
-
-        let request = self.client.get_request(url).build()?;
-
-        Ok(self.client.execute(request).await?.json::<Records>().await?)
     }
 }
 
@@ -466,7 +472,11 @@ impl ExecutionPlan for AirtableScan {
                 let page_size = 500;
                 let offset = page * page_size;
 
-                match airtable.records(page_size, offset).await {
+                match airtable
+                    .client
+                    .records(&airtable.table_name, page_size, offset)
+                    .await
+                {
                     Ok(records) if !records.records.is_empty() => {
                         let columns: Vec<ArrayRef> = records
                             .build_columns(schema_ref.clone())
