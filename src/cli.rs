@@ -5,10 +5,29 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream};
 #[clap(author, version, about, name = "airquery", long_about = None)]
 pub struct Args {
     pub query: String,
+
     #[clap(env = "AIRQUERY_API_KEY", short = 'k', long)]
     pub airtable_api_key: String,
+
     #[clap(env = "AIRQUERY_BASE", short = 'b', long)]
     pub airtable_base: String,
+
+    #[clap(short = 'j', long, default_value_t = false)]
+    pub json: bool,
+
+    #[clap(
+        long,
+        default_value_t = true,
+        help = "Output decimals as string if the underlying output doesn't support native decimals (like json). True by default."
+    )]
+    pub decimal_as_string: bool,
+
+    #[clap(
+        long,
+        default_value_t = true,
+        help = "Output decimals as floats if the underlying output doesn't support native decimals (like json). False by default."
+    )]
+    pub decimal_as_float: bool,
 }
 
 pub struct Colors {

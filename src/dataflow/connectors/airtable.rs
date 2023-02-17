@@ -7,11 +7,10 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{
     DataType, Date64Type, Field, Schema, SchemaRef,
 };
-use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::schema::{MemorySchemaProvider, SchemaProvider};
 use datafusion::datasource::{TableProvider, TableType};
-use datafusion::error::Result as DataFusionResult;
+use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::PhysicalSortExpr;
@@ -396,7 +395,7 @@ struct AirtableScan {
 
 struct AirtableStream<S>
 where
-    S: Stream<Item = Result<RecordBatch, ArrowError>>,
+    S: Stream<Item = Result<RecordBatch, DataFusionError>>,
 {
     stream: Pin<Box<S>>,
     schema: SchemaRef,
@@ -404,9 +403,9 @@ where
 
 impl<S> Stream for AirtableStream<S>
 where
-    S: Stream<Item = Result<RecordBatch, ArrowError>>,
+    S: Stream<Item = Result<RecordBatch, DataFusionError>>,
 {
-    type Item = Result<RecordBatch, ArrowError>;
+    type Item = Result<RecordBatch, DataFusionError>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -424,7 +423,7 @@ where
 
 impl<S> RecordBatchStream for AirtableStream<S>
 where
-    S: Stream<Item = Result<RecordBatch, ArrowError>>,
+    S: Stream<Item = Result<RecordBatch, DataFusionError>>,
 {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
@@ -486,7 +485,8 @@ impl ExecutionPlan for AirtableScan {
                             .collect();
 
                         let batch =
-                            RecordBatch::try_new(schema_ref.clone(), columns);
+                            RecordBatch::try_new(schema_ref.clone(), columns)
+                                .map_err(|e| DataFusionError::ArrowError(e));
 
                         Some((batch, (airtable, schema_ref, page + 1)))
                     }

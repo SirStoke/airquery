@@ -3,9 +3,13 @@ mod dataflow;
 
 use crate::cli::Cli;
 use crate::dataflow::connectors::airtable::Airtable;
+use datafusion::arrow::json::LineDelimitedWriter;
 use datafusion::catalog::catalog::{CatalogProvider, MemoryCatalogProvider};
 use datafusion::prelude::*;
+use futures::StreamExt;
+use log::debug;
 use std::sync::Arc;
+use termcolor::{ColorChoice, StandardStream};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,8 +38,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create a plan to run a SQL query
     let df = ctx.sql(&cli.args.query).await?;
 
-    // execute and print results
-    df.show().await?;
+    if cli.args.json {
+        let mut w = LineDelimitedWriter::new(StandardStream::stdout(
+            ColorChoice::Never,
+        ));
+
+        let mut stream = df.execute_stream().await?;
+
+        while let Some(Ok(batch)) = stream.next().await {
+            for col in batch.columns().iter() {
+                debug!("col: {:?}, array: {:?}", col.data_type(), col);
+            }
+
+            w.write(batch)?;
+        }
+
+        w.finish()?;
+    } else {
+        // execute and print results
+        df.show().await?;
+    }
 
     Ok(())
 }

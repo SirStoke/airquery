@@ -49,7 +49,7 @@
                 [[ -d "$HOME/.local/share/JetBrains/IntelliJIdea2022.3/intellij-rust" ]] && autoPatchelf $HOME/.local/share/JetBrains/IntelliJIdea2022.3/intellij-rust
               ''
             )
-            + "rustup install stable";
+            + "rustup install nightly";
 
           nativeBuildInputs = with pkgs;
             (
