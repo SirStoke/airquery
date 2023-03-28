@@ -329,8 +329,11 @@ impl AirtableTableProvider {
     fn build_schema_ref(table: &Table<String>) -> SchemaRef {
         let fields = table.fields.iter().filter_map(|field| {
             let type_ = match field.type_.as_str() {
-                "singleLineText" => Some(DataType::Utf8),
-                "currency" => Some(DataType::Decimal128(38, 10)),
+                "singleLineText" | "singleSelect" | "phoneNumber"
+                | "email" => Some(DataType::Utf8),
+                "currency" | "number" | "percent" => {
+                    Some(DataType::Decimal128(38, 10))
+                }
                 "date" => Some(DataType::Date64),
                 any => {
                     debug!(
