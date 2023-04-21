@@ -14,7 +14,7 @@
     naersk,
     nixpkgs,
     lldb-nixpkgs,
-    dotfiles,
+    dotfiles
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
@@ -37,6 +37,20 @@
         # For `nix build` & `nix run`:
         defaultPackage = naersk'.buildPackage {
           src = ./.;
+          gitAllRefs = true; # We use our fork of arrow-rs
+
+          buildInputs = with pkgs; [ pkgconfig openssl libiconv ];
+        };
+
+        packages.docker-image = pkgs.dockerTools.buildImage {
+          name = "airquery";
+
+          config = {
+            Cmd = [  "${defaultPackage}/bin/airquery" ];
+          };
+
+          created = "now";
+          tag = if self ? rev then self.shortRev else null;
         };
 
         # For `nix develop` (optional, can be skipped):
