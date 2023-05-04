@@ -50,7 +50,7 @@
           };
 
           created = "now";
-          tag = if self ? rev then self.shortRev else null;
+          tag = if self ? rev then self.rev else null;
         };
 
         # For `nix develop` (optional, can be skipped):
