@@ -2,6 +2,24 @@
 
 Run SQL queries directly on Airtable bases, without copying data into an RDBMS first!
 
+# Install
+
+## Using docker
+
+You can use [stoke/airquery](https://hub.docker.com/r/stoke/airquery):
+
+```
+docker run --rm stoke/airquery
+```
+
+## Using nix
+
+This repository includes a flake, just run:
+
+```
+nix run github:SirStoke/airquery
+```
+
 # How to use
 
 Requirements:
