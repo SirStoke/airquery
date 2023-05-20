@@ -14,7 +14,7 @@
     naersk,
     nixpkgs,
     lldb-nixpkgs,
-    dotfiles
+    dotfiles,
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
@@ -31,6 +31,23 @@
         };
 
         naersk' = pkgs.callPackage naersk {};
+
+        wasm-bindgen-cli-2 = pkgs.wasm-bindgen-cli.overrideAttrs (f: p: rec {
+          version = "0.2.86";
+
+          src = pkgs.fetchCrate {
+            version = "0.2.86";
+
+            pname = "wasm-bindgen-cli";
+            sha256 = "sha256-56EOiLbdgAcoTrkyvB3t9TjtLaRvGxFUXx4haLwE2QY=";
+          };
+
+          cargoDeps = p.cargoDeps.overrideAttrs (_: _: {
+            inherit src;
+
+            outputHash = "sha256-xPgVWQ6tvU+CarfFrkaSMa3UmnP+0r4kexmS59TNQ+o=";
+          });
+        });
       in rec {
         formatter = pkgs.alejandra;
 
@@ -39,23 +56,26 @@
           src = ./.;
           gitAllRefs = true; # We use our fork of arrow-rs
 
-          buildInputs = with pkgs; [ pkgconfig openssl libiconv ];
+          buildInputs = with pkgs; [pkgconfig openssl libiconv];
         };
 
         packages.docker-image = pkgs.dockerTools.buildImage {
           name = "airquery";
 
           config = {
-            Cmd = [  "${defaultPackage}/bin/airquery" ];
+            Cmd = ["${defaultPackage}/bin/airquery"];
           };
 
           created = "now";
-          tag = if self ? rev then self.rev else null;
+          tag =
+            if self ? rev
+            then self.rev
+            else null;
         };
 
         # For `nix develop` (optional, can be skipped):
         devShell = pkgs.mkShell {
-          packages = (with pkgs; [ rustup dotfiles.packages.${system}.idea-ultimate cargo-watch lldb-pkgs.lldb ]) ++ (pkgs.lib.lists.optional pkgs.stdenv.isLinux pkgs.autoPatchelfHook);
+          packages = (with pkgs; [rustup dotfiles.packages.${system}.idea-ultimate cargo-watch wasm-bindgen-cli-2 lldb-pkgs.lldb wabt]) ++ (pkgs.lib.lists.optional pkgs.stdenv.isLinux pkgs.autoPatchelfHook);
 
           shellHook =
             (
@@ -71,7 +91,7 @@
               then [darwin.apple_sdk.frameworks.Security]
               else []
             )
-            ++ [ pkgconfig openssl libiconv lldb ];
+            ++ [pkgconfig openssl libiconv lldb];
         };
       }
     );
